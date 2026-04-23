@@ -44,6 +44,71 @@ const FIELDS: FieldConfig[] = [
 
 type FormState = Record<FieldConfig['key'], string>;
 
+type FormFieldProps = {
+  field: FieldConfig;
+  value: string;
+  onChangeText: (text: string) => void;
+};
+
+function FormField({ field, value, onChangeText }: FormFieldProps) {
+  const [isFocused, setIsFocused] = useState(false);
+  const [showSecure, setShowSecure] = useState(false);
+
+  const isSecure = (field.key === 'password' || field.key === 'confirmPassword') && !showSecure;
+  const showToggle = field.key === 'password' || field.key === 'confirmPassword';
+
+  return (
+    <View style={styles.fieldGroup}>
+      <Text style={styles.fieldLabel}>{field.label}</Text>
+      <View style={[
+        styles.inputWrapper,
+        isFocused && styles.inputWrapperFocused,
+        field.multiline && styles.inputWrapperMultiline,
+      ]}>
+        <Ionicons
+          name={field.icon}
+          size={18}
+          color={isFocused ? Colors.primary : Colors.accent}
+          style={[styles.inputIcon, field.multiline && styles.inputIconTop]}
+        />
+        <TextInput
+          style={[styles.input, field.multiline && styles.inputMultiline]}
+          placeholder={field.placeholder}
+          placeholderTextColor={Colors.accent}
+          keyboardType={field.keyboard ?? 'default'}
+          autoCapitalize={field.keyboard === 'email-address' ? 'none' : 'sentences'}
+          autoCorrect={field.key === 'skillsOffered' || field.key === 'skillsNeeded'}
+          secureTextEntry={isSecure}
+          multiline={field.multiline}
+          numberOfLines={field.multiline ? 2 : 1}
+          value={value}
+          onChangeText={onChangeText}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+        />
+        {showToggle && (
+          <TouchableOpacity
+            onPress={() => setShowSecure((v) => !v)}
+            style={styles.eyeBtn}
+          >
+            <Ionicons
+              name={showSecure ? 'eye-off-outline' : 'eye-outline'}
+              size={18}
+              color={Colors.accent}
+            />
+          </TouchableOpacity>
+        )}
+      </View>
+      {field.key === 'skillsOffered' && (
+        <Text style={styles.fieldHint}>Separate multiple skills with commas</Text>
+      )}
+      {field.key === 'skillsNeeded' && (
+        <Text style={styles.fieldHint}>Separate multiple skills with commas</Text>
+      )}
+    </View>
+  );
+}
+
 export default function SignupScreen() {
   const router = useRouter();
 
@@ -56,9 +121,6 @@ export default function SignupScreen() {
     skillsNeeded: '',
   });
 
-  const [showPassword, setShowPassword] = useState(false);
-  const [showConfirm, setShowConfirm] = useState(false);
-  const [focusedField, setFocusedField] = useState<FieldConfig['key'] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
@@ -119,65 +181,10 @@ export default function SignupScreen() {
     }
   }
 
-  function renderField(field: FieldConfig) {
-    const isFocused = focusedField === field.key;
-    const isSecure = (field.key === 'password' && !showPassword) || (field.key === 'confirmPassword' && !showConfirm);
-    const showToggle = field.key === 'password' || field.key === 'confirmPassword';
-
-    return (
-      <View key={field.key} style={styles.fieldGroup}>
-        <Text style={styles.fieldLabel}>{field.label}</Text>
-        <View style={[
-          styles.inputWrapper,
-          isFocused && styles.inputWrapperFocused,
-          field.multiline && styles.inputWrapperMultiline,
-        ]}>
-          <Ionicons
-            name={field.icon}
-            size={18}
-            color={isFocused ? Colors.primary : Colors.accent}
-            style={[styles.inputIcon, field.multiline && styles.inputIconTop]}
-          />
-          <TextInput
-            style={[styles.input, field.multiline && styles.inputMultiline]}
-            placeholder={field.placeholder}
-            placeholderTextColor={Colors.accent}
-            keyboardType={field.keyboard ?? 'default'}
-            autoCapitalize={field.keyboard === 'email-address' ? 'none' : 'sentences'}
-            autoCorrect={field.key === 'skillsOffered' || field.key === 'skillsNeeded'}
-            secureTextEntry={isSecure}
-            multiline={field.multiline}
-            numberOfLines={field.multiline ? 2 : 1}
-            value={form[field.key]}
-            onChangeText={(v) => updateField(field.key, v)}
-            onFocus={() => setFocusedField(field.key)}
-            onBlur={() => setFocusedField(null)}
-          />
-          {showToggle && (
-            <TouchableOpacity
-              onPress={() => field.key === 'password' ? setShowPassword((v) => !v) : setShowConfirm((v) => !v)}
-              style={styles.eyeBtn}
-            >
-              <Ionicons
-                name={(field.key === 'password' ? showPassword : showConfirm) ? 'eye-off-outline' : 'eye-outline'}
-                size={18}
-                color={Colors.accent}
-              />
-            </TouchableOpacity>
-          )}
-        </View>
-        {field.key === 'skillsOffered' && (
-          <Text style={styles.fieldHint}>Separate multiple skills with commas</Text>
-        )}
-        {field.key === 'skillsNeeded' && (
-          <Text style={styles.fieldHint}>Separate multiple skills with commas</Text>
-        )}
-      </View>
-    );
-  }
+  const Container = Platform.OS === 'ios' ? KeyboardAvoidingView : View;
 
   return (
-    <KeyboardAvoidingView
+    <Container
       style={styles.flex}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
@@ -215,7 +222,14 @@ export default function SignupScreen() {
             <View style={styles.sectionLabelDivider} />
           </View>
 
-          {FIELDS.slice(0, 4).map(renderField)}
+          {FIELDS.slice(0, 4).map((field) => (
+            <FormField
+              key={field.key}
+              field={field}
+              value={form[field.key]}
+              onChangeText={(v) => updateField(field.key, v)}
+            />
+          ))}
 
           <View style={styles.skillsSectionLabel}>
             <View style={styles.sectionLabelDivider} />
@@ -228,7 +242,14 @@ export default function SignupScreen() {
             <Text style={styles.skillsInfoText}>Tell the community what you can offer and what you're looking for</Text>
           </View>
 
-          {FIELDS.slice(4).map(renderField)}
+          {FIELDS.slice(4).map((field) => (
+            <FormField
+              key={field.key}
+              field={field}
+              value={form[field.key]}
+              onChangeText={(v) => updateField(field.key, v)}
+            />
+          ))}
 
           <TouchableOpacity
             style={[styles.primaryBtn, loading && styles.primaryBtnDisabled]}
@@ -254,7 +275,7 @@ export default function SignupScreen() {
           </TouchableOpacity>
         </View>
       </ScrollView>
-    </KeyboardAvoidingView>
+    </Container>
   );
 }
 
@@ -413,11 +434,6 @@ const styles = StyleSheet.create({
   inputWrapperFocused: {
     borderColor: Colors.primary,
     backgroundColor: Colors.background,
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 2,
   },
   inputWrapperMultiline: {
     height: 'auto',

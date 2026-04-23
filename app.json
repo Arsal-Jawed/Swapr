@@ -40,6 +40,12 @@
         }
       ],
       [
+        "expo-camera",
+        {
+          "cameraPermission": "Swapr needs access to your camera to scan meeting verification QR codes."
+        }
+      ],
+      [
         "expo-image-picker",
         {
           "photosPermission": "Swapr needs access to your photos so you can upload a profile picture.",

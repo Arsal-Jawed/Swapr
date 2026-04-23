@@ -1,157 +1,299 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
   StyleSheet,
-  TouchableOpacity,
-  Animated,
-  Dimensions,
   SafeAreaView,
-  Image,
+  TouchableOpacity,
+  Alert,
+  Modal,
+  TextInput,
+  ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  TouchableWithoutFeedback,
+  Keyboard,
 } from 'react-native';
+import { CameraView, Camera } from 'expo-camera';
+import QRCode from 'react-native-qrcode-svg';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
-
-const { width: SCREEN_WIDTH } = Dimensions.get('window');
-const SCANNER_SIZE = SCREEN_WIDTH * 0.7;
+import { useAuth } from '@/context/AuthContext';
+import { db } from '@/firebaseConfig';
+import {
+  collection,
+  addDoc,
+  serverTimestamp,
+  doc,
+  getDoc,
+  updateDoc,
+} from 'firebase/firestore';
 
 export default function ScanScreen() {
-  const [mode, setMode] = useState<'scan' | 'my-code'>('scan');
-  const scanLineAnim = useRef(new Animated.Value(0)).current;
+  const { user } = useAuth();
+  const [hasPermission, setHasPermission] = useState<boolean | null>(null);
+  const [scanned, setScanned] = useState(false);
+  const [activeTab, setActiveTab] = useState<'scan' | 'myCode'>('scan');
+  const [isProcessing, setIsProcessing] = useState(false);
+
+  const [ratingModalVisible, setRatingModalVisible] = useState(false);
+  const [targetUserId, setTargetUserId] = useState('');
+  const [rating, setRating] = useState(0);
+  const [reviewText, setReviewText] = useState('');
+  const [isSubmittingReview, setIsSubmittingReview] = useState(false);
 
   useEffect(() => {
-    Animated.loop(
-      Animated.sequence([
-        Animated.timing(scanLineAnim, {
-          toValue: 1,
-          duration: 2000,
-          useNativeDriver: true,
-        }),
-        Animated.timing(scanLineAnim, {
-          toValue: 0,
-          duration: 2000,
-          useNativeDriver: true,
-        }),
-      ])
-    ).start();
+    (async () => {
+      const { status } = await Camera.requestCameraPermissionsAsync();
+      setHasPermission(status === 'granted');
+    })();
   }, []);
 
-  const scanLineTranslate = scanLineAnim.interpolate({
-    inputRange: [0, 1],
-    outputRange: [0, SCANNER_SIZE - 4],
-  });
+  async function handleBarCodeScanned({ data }: { data: string }) {
+    if (scanned || isProcessing || !user) return;
+    setScanned(true);
+    setIsProcessing(true);
+
+    try {
+      await addDoc(collection(db, 'meetings'), {
+        scannedById: user.uid,
+        scannedUserId: data,
+        verified: true,
+        timestamp: serverTimestamp(),
+      });
+      
+      setTargetUserId(data);
+      setRatingModalVisible(true);
+    } catch {
+      Alert.alert(
+        'Error',
+        'Could not verify meeting. Please try again.',
+        [
+          {
+            text: 'OK',
+            onPress: () => {
+              setScanned(false);
+              setIsProcessing(false);
+            },
+          },
+        ]
+      );
+    }
+  }
+
+  async function submitReview() {
+    if (!user || rating === 0) {
+      Alert.alert('Rating Required', 'Please select a star rating.');
+      return;
+    }
+
+    setIsSubmittingReview(true);
+
+    try {
+      await addDoc(collection(db, 'reviews'), {
+        reviewerId: user.uid,
+        reviewerName: user.displayName || 'Swapr User',
+        targetId: targetUserId,
+        rating,
+        text: reviewText.trim(),
+        timestamp: serverTimestamp(),
+      });
+
+      const userRef = doc(db, 'users', targetUserId);
+      const userSnap = await getDoc(userRef);
+
+      if (userSnap.exists()) {
+        const data = userSnap.data();
+        const currentRating = data.rating || 0;
+        const currentSwaps = data.swapsCompleted || 0;
+        
+        const newSwaps = currentSwaps + 1;
+        const newRating = ((currentRating * currentSwaps) + rating) / newSwaps;
+
+        await updateDoc(userRef, {
+          rating: newRating,
+          swapsCompleted: newSwaps,
+        });
+      }
+
+      closeModal();
+      Alert.alert('Success', 'Feedback submitted successfully!');
+    } catch {
+      Alert.alert('Error', 'Failed to submit feedback.');
+      setIsSubmittingReview(false);
+    }
+  }
+
+  function closeModal() {
+    setRatingModalVisible(false);
+    setRating(0);
+    setReviewText('');
+    setTargetUserId('');
+    setIsSubmittingReview(false);
+    setScanned(false);
+    setIsProcessing(false);
+  }
+
+  if (hasPermission === null) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.center}>
+          <Text style={styles.instructionText}>Requesting camera permission...</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
+
+  if (hasPermission === false) {
+    return (
+      <SafeAreaView style={styles.safeArea}>
+        <View style={styles.center}>
+          <Text style={styles.instructionText}>No access to camera requested.</Text>
+        </View>
+      </SafeAreaView>
+    );
+  }
 
   return (
     <SafeAreaView style={styles.safeArea}>
-      <View style={styles.container}>
-        <View style={styles.header}>
-          <Text style={styles.headerTitle}>QR Scanner</Text>
-          <TouchableOpacity style={styles.historyBtn}>
-            <Ionicons name="time-outline" size={22} color={Colors.primary} />
-          </TouchableOpacity>
-        </View>
-
-        <View style={styles.modeToggle}>
-          <TouchableOpacity
-            style={[styles.modeBtn, mode === 'scan' && styles.modeBtnActive]}
-            onPress={() => setMode('scan')}
-          >
-            <Ionicons name="scan-outline" size={16} color={mode === 'scan' ? Colors.white : Colors.primary} />
-            <Text style={[styles.modeBtnText, mode === 'scan' && styles.modeBtnTextActive]}>Scan Code</Text>
-          </TouchableOpacity>
-          <TouchableOpacity
-            style={[styles.modeBtn, mode === 'my-code' && styles.modeBtnActive]}
-            onPress={() => setMode('my-code')}
-          >
-            <Ionicons name="qr-code-outline" size={16} color={mode === 'my-code' ? Colors.white : Colors.primary} />
-            <Text style={[styles.modeBtnText, mode === 'my-code' && styles.modeBtnTextActive]}>My Code</Text>
-          </TouchableOpacity>
-        </View>
-
-        {mode === 'scan' ? (
-          <View style={styles.scanArea}>
-            <View style={styles.viewfinderOuter}>
-              <View style={styles.viewfinder}>
-                <View style={[styles.corner, styles.cornerTopLeft]} />
-                <View style={[styles.corner, styles.cornerTopRight]} />
-                <View style={[styles.corner, styles.cornerBottomLeft]} />
-                <View style={[styles.corner, styles.cornerBottomRight]} />
-
-                <Animated.View
-                  style={[
-                    styles.scanLine,
-                    { transform: [{ translateY: scanLineTranslate }] },
-                  ]}
-                />
-
-                <View style={styles.viewfinderCenter}>
-                  <Ionicons name="qr-code-outline" size={64} color="rgba(107,33,168,0.2)" />
-                </View>
-              </View>
-            </View>
-
-            <Text style={styles.scanHint}>
-              Point your camera at a Swapr QR code to connect
-            </Text>
-
-            <View style={styles.scanActions}>
-              <TouchableOpacity style={styles.scanActionBtn}>
-                <Ionicons name="flashlight-outline" size={20} color={Colors.primary} />
-                <Text style={styles.scanActionText}>Torch</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.scanActionBtn}>
-                <Ionicons name="image-outline" size={20} color={Colors.primary} />
-                <Text style={styles.scanActionText}>Gallery</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={styles.scanActionBtn}>
-                <Ionicons name="link-outline" size={20} color={Colors.primary} />
-                <Text style={styles.scanActionText}>Enter Code</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        ) : (
-          <View style={styles.myCodeArea}>
-            <View style={styles.myCodeCard}>
-              <View style={styles.myCodeUserRow}>
-                <Image
-                  source={{ uri: 'https://images.unsplash.com/photo-1535713875002-d1d0cf377fde?w=200&h=200&fit=crop' }}
-                  style={styles.myCodeAvatar}
-                />
-                <View>
-                  <Text style={styles.myCodeName}>Your Profile</Text>
-                  <Text style={styles.myCodeHandle}>@yourhandle</Text>
-                </View>
-              </View>
-
-              <View style={styles.qrWrapper}>
-                <Image
-                  source={{ uri: 'https://images.unsplash.com/photo-1584839404500-6e6addb4deb7?w=300&h=300&fit=crop' }}
-                  style={styles.qrImage}
-                />
-                <View style={styles.qrLogoOverlay}>
-                  <View style={styles.qrLogo}>
-                    <Text style={styles.qrLogoText}>S</Text>
-                  </View>
-                </View>
-              </View>
-
-              <Text style={styles.myCodeSkill}>UI/UX Design · Photography</Text>
-              <Text style={styles.myCodeInfo}>Share this code to connect on Swapr</Text>
-            </View>
-
-            <View style={styles.shareActions}>
-              <TouchableOpacity style={styles.shareBtn}>
-                <Ionicons name="download-outline" size={18} color={Colors.primary} />
-                <Text style={styles.shareBtnText}>Save</Text>
-              </TouchableOpacity>
-              <TouchableOpacity style={[styles.shareBtn, styles.shareBtnPrimary]}>
-                <Ionicons name="share-outline" size={18} color={Colors.white} />
-                <Text style={[styles.shareBtnText, styles.shareBtnTextPrimary]}>Share</Text>
-              </TouchableOpacity>
-            </View>
-          </View>
-        )}
+      <View style={styles.header}>
+        <Text style={styles.headerTitle}>Scan</Text>
       </View>
+
+      <View style={styles.tabContainer}>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'scan' && styles.activeTab]}
+          onPress={() => setActiveTab('scan')}
+        >
+          <Text style={[styles.tabText, activeTab === 'scan' && styles.activeTabText]}>
+            Scan Code
+          </Text>
+        </TouchableOpacity>
+        <TouchableOpacity
+          style={[styles.tab, activeTab === 'myCode' && styles.activeTab]}
+          onPress={() => setActiveTab('myCode')}
+        >
+          <Text style={[styles.tabText, activeTab === 'myCode' && styles.activeTabText]}>
+            My Code
+          </Text>
+        </TouchableOpacity>
+      </View>
+
+      {activeTab === 'scan' ? (
+        <View style={styles.scanContainer}>
+          <Text style={styles.instructionText}>
+            Align QR code within the frame to verify meeting
+          </Text>
+
+          <View style={styles.cameraFrame}>
+            <View style={styles.cameraBorder} />
+            <CameraView
+              style={StyleSheet.absoluteFillObject}
+              facing="back"
+              onBarcodeScanned={scanned ? undefined : handleBarCodeScanned}
+              barcodeScannerSettings={{
+                barcodeTypes: ['qr'],
+              }}
+            />
+          </View>
+        </View>
+      ) : (
+        <View style={styles.myCodeContainer}>
+          <Text style={styles.instructionText}>
+            Show this code to verify your skill swap meeting
+          </Text>
+          
+          <View style={styles.qrWrapper}>
+            {user?.uid ? (
+              <QRCode
+                value={user.uid}
+                size={220}
+                color={Colors.primary}
+                backgroundColor={Colors.white}
+              />
+            ) : (
+              <Text style={styles.instructionText}>User ID missing.</Text>
+            )}
+          </View>
+
+          <View style={styles.profileBadge}>
+            <Ionicons name="person-circle-outline" size={24} color={Colors.primary} />
+            <Text style={styles.userIdText}>
+              ID: {user?.uid.substring(0, 8).toUpperCase()}
+            </Text>
+          </View>
+        </View>
+      )}
+
+      <Modal
+        visible={ratingModalVisible}
+        transparent
+        animationType="fade"
+        onRequestClose={closeModal}
+      >
+        <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
+          <KeyboardAvoidingView 
+            style={styles.modalBackdrop}
+            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+          >
+            <View style={styles.modalContent}>
+              <View style={styles.modalHeader}>
+                <Ionicons name="checkmark-circle" size={48} color={Colors.primary} />
+                <Text style={styles.modalTitle}>Meeting Verified!</Text>
+                <Text style={styles.modalSubtitle}>Rate your skill swap experience</Text>
+              </View>
+
+              <View style={styles.starsContainer}>
+                {[1, 2, 3, 4, 5].map((starIndex) => (
+                  <TouchableOpacity
+                    key={starIndex}
+                    onPress={() => setRating(starIndex)}
+                    activeOpacity={0.7}
+                  >
+                    <Ionicons
+                      name={starIndex <= rating ? 'star' : 'star-outline'}
+                      size={42}
+                      color={starIndex <= rating ? Colors.primary : Colors.accent}
+                    />
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              <TextInput
+                style={styles.reviewInput}
+                placeholder="Write a short review..."
+                placeholderTextColor={Colors.accent}
+                multiline
+                numberOfLines={4}
+                value={reviewText}
+                onChangeText={setReviewText}
+                textAlignVertical="top"
+              />
+
+              <View style={styles.modalActions}>
+                <TouchableOpacity 
+                  style={styles.modalCancelBtn} 
+                  onPress={closeModal}
+                  disabled={isSubmittingReview}
+                >
+                  <Text style={styles.modalCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity 
+                  style={[styles.modalSubmitBtn, rating === 0 && styles.modalSubmitBtnDisabled]} 
+                  onPress={submitReview}
+                  disabled={rating === 0 || isSubmittingReview}
+                >
+                  {isSubmittingReview ? (
+                    <ActivityIndicator color={Colors.white} size="small" />
+                  ) : (
+                    <Text style={styles.modalSubmitText}>Submit Review</Text>
+                  )}
+                </TouchableOpacity>
+              </View>
+            </View>
+          </KeyboardAvoidingView>
+        </TouchableWithoutFeedback>
+      </Modal>
     </SafeAreaView>
   );
 }
@@ -159,16 +301,9 @@ export default function ScanScreen() {
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: Colors.background,
-  },
-  container: {
-    flex: 1,
-    backgroundColor: Colors.background,
+    backgroundColor: Colors.white,
   },
   header: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
     paddingHorizontal: 20,
     paddingTop: 16,
     paddingBottom: 12,
@@ -178,260 +313,200 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: Colors.text,
   },
-  historyBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: Colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  modeToggle: {
+  tabContainer: {
     flexDirection: 'row',
     marginHorizontal: 20,
     backgroundColor: Colors.surface,
-    borderRadius: 14,
+    borderRadius: 12,
     padding: 4,
-    marginBottom: 32,
+    marginBottom: 24,
     borderWidth: 1,
     borderColor: Colors.border,
   },
-  modeBtn: {
+  tab: {
     flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: 6,
     paddingVertical: 10,
-    borderRadius: 11,
+    alignItems: 'center',
+    borderRadius: 8,
   },
-  modeBtnActive: {
-    backgroundColor: Colors.primary,
+  activeTab: {
+    backgroundColor: Colors.white,
     shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.3,
-    shadowRadius: 8,
-    elevation: 4,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
-  modeBtnText: {
-    fontSize: 13,
-    fontWeight: '700',
-    color: Colors.primary,
-  },
-  modeBtnTextActive: {
-    color: Colors.white,
-  },
-  scanArea: {
-    flex: 1,
-    alignItems: 'center',
-    paddingTop: 8,
-  },
-  viewfinderOuter: {
-    padding: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  viewfinder: {
-    width: SCANNER_SIZE,
-    height: SCANNER_SIZE,
-    backgroundColor: 'rgba(107, 33, 168, 0.04)',
-    borderRadius: 24,
-    overflow: 'hidden',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  corner: {
-    position: 'absolute',
-    width: 28,
-    height: 28,
-    borderColor: Colors.primary,
-    borderWidth: 3,
-  },
-  cornerTopLeft: {
-    top: 12,
-    left: 12,
-    borderRightWidth: 0,
-    borderBottomWidth: 0,
-    borderTopLeftRadius: 8,
-  },
-  cornerTopRight: {
-    top: 12,
-    right: 12,
-    borderLeftWidth: 0,
-    borderBottomWidth: 0,
-    borderTopRightRadius: 8,
-  },
-  cornerBottomLeft: {
-    bottom: 12,
-    left: 12,
-    borderRightWidth: 0,
-    borderTopWidth: 0,
-    borderBottomLeftRadius: 8,
-  },
-  cornerBottomRight: {
-    bottom: 12,
-    right: 12,
-    borderLeftWidth: 0,
-    borderTopWidth: 0,
-    borderBottomRightRadius: 8,
-  },
-  scanLine: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    height: 2.5,
-    backgroundColor: Colors.primary,
-    opacity: 0.8,
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 1,
-    shadowRadius: 6,
-  },
-  viewfinderCenter: {
-    opacity: 0.5,
-  },
-  scanHint: {
+  tabText: {
     fontSize: 14,
-    color: Colors.textSecondary,
-    fontWeight: '500',
-    textAlign: 'center',
-    paddingHorizontal: 40,
-    marginBottom: 32,
-  },
-  scanActions: {
-    flexDirection: 'row',
-    gap: 24,
-  },
-  scanActionBtn: {
-    alignItems: 'center',
-    gap: 6,
-    backgroundColor: Colors.surface,
-    borderRadius: 16,
-    padding: 16,
-    borderWidth: 1,
-    borderColor: Colors.border,
-    minWidth: 80,
-  },
-  scanActionText: {
-    fontSize: 12,
     fontWeight: '600',
+    color: Colors.accent,
+  },
+  activeTabText: {
     color: Colors.primary,
   },
-  myCodeArea: {
+  scanContainer: {
     flex: 1,
     alignItems: 'center',
     paddingHorizontal: 20,
   },
-  myCodeCard: {
-    width: '100%',
-    backgroundColor: Colors.surface,
-    borderRadius: 28,
-    padding: 24,
+  myCodeContainer: {
+    flex: 1,
     alignItems: 'center',
-    borderWidth: 1,
-    borderColor: Colors.border,
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.12,
-    shadowRadius: 20,
-    elevation: 6,
+    paddingHorizontal: 20,
+    paddingTop: 20,
   },
-  myCodeUserRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-    marginBottom: 20,
-    alignSelf: 'flex-start',
-  },
-  myCodeAvatar: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    borderWidth: 2,
-    borderColor: Colors.primary,
-  },
-  myCodeName: {
+  instructionText: {
     fontSize: 15,
-    fontWeight: '700',
-    color: Colors.text,
-  },
-  myCodeHandle: {
-    fontSize: 12,
-    color: Colors.accent,
-    fontWeight: '500',
-  },
-  qrWrapper: {
-    position: 'relative',
-    marginBottom: 16,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  qrImage: {
-    width: 200,
-    height: 200,
-    borderRadius: 16,
-  },
-  qrLogoOverlay: {
-    position: 'absolute',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  qrLogo: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
-    backgroundColor: Colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 3,
-    borderColor: Colors.white,
-  },
-  qrLogoText: {
-    fontSize: 22,
-    fontWeight: '800',
-    color: Colors.white,
-  },
-  myCodeSkill: {
-    fontSize: 13,
     fontWeight: '600',
     color: Colors.primary,
-    marginBottom: 6,
+    textAlign: 'center',
+    marginBottom: 32,
+    paddingHorizontal: 20,
   },
-  myCodeInfo: {
-    fontSize: 12,
-    color: Colors.textMuted,
+  cameraFrame: {
+    width: 280,
+    height: 280,
+    position: 'relative',
+    borderRadius: 24,
+    overflow: 'hidden',
+  },
+  cameraBorder: {
+    ...StyleSheet.absoluteFillObject,
+    borderWidth: 4,
+    borderColor: Colors.accent,
+    borderRadius: 24,
+    zIndex: 10,
+    pointerEvents: 'none',
+  },
+  qrWrapper: {
+    backgroundColor: Colors.white,
+    padding: 24,
+    borderRadius: 24,
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 8 },
+    shadowOpacity: 0.15,
+    shadowRadius: 24,
+    elevation: 8,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    marginBottom: 32,
+  },
+  profileBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: Colors.surface,
+    paddingHorizontal: 16,
+    paddingVertical: 12,
+    borderRadius: 16,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    gap: 8,
+  },
+  userIdText: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.text,
+    letterSpacing: 1,
+  },
+  center: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContent: {
+    width: '85%',
+    backgroundColor: Colors.white,
+    borderRadius: 24,
+    padding: 24,
+    alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.2,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  modalHeader: {
+    alignItems: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 22,
+    fontWeight: '800',
+    color: Colors.text,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  modalSubtitle: {
+    fontSize: 14,
+    color: Colors.textSecondary,
     fontWeight: '500',
     textAlign: 'center',
   },
-  shareActions: {
+  starsContainer: {
     flexDirection: 'row',
-    gap: 12,
-    marginTop: 20,
-    width: '100%',
-  },
-  shareBtn: {
-    flex: 1,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
     gap: 8,
-    paddingVertical: 14,
-    borderRadius: 16,
+    marginBottom: 24,
+  },
+  reviewInput: {
+    width: '100%',
     backgroundColor: Colors.surface,
+    borderRadius: 16,
     borderWidth: 1,
     borderColor: Colors.border,
+    padding: 16,
+    minHeight: 100,
+    fontSize: 15,
+    color: Colors.text,
+    marginBottom: 24,
   },
-  shareBtnPrimary: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
+  modalActions: {
+    flexDirection: 'row',
+    gap: 12,
+    width: '100%',
   },
-  shareBtnText: {
-    fontSize: 14,
+  modalCancelBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 14,
+    borderWidth: 1.5,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: Colors.surface,
+  },
+  modalCancelText: {
+    fontSize: 15,
     fontWeight: '700',
-    color: Colors.primary,
+    color: Colors.textSecondary,
   },
-  shareBtnTextPrimary: {
+  modalSubmitBtn: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 14,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: Colors.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  modalSubmitBtnDisabled: {
+    opacity: 0.5,
+    elevation: 0,
+    shadowOpacity: 0,
+  },
+  modalSubmitText: {
+    fontSize: 15,
+    fontWeight: '800',
     color: Colors.white,
   },
 });

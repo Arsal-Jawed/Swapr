@@ -22,15 +22,66 @@ const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
 const HERO_IMAGE = 'https://images.unsplash.com/photo-1522202176988-66273c2fd55f?w=900&h=600&fit=crop';
 
+interface InputFieldProps {
+  label: string;
+  placeholder: string;
+  value: string;
+  onChangeText: (text: string) => void;
+  icon: React.ComponentProps<typeof Ionicons>['name'];
+  secure?: boolean;
+  keyboardType?: 'default' | 'email-address';
+  autoCapitalize?: 'none' | 'sentences';
+}
+
+function InputField({ label, placeholder, value, onChangeText, icon, secure, keyboardType, autoCapitalize }: InputFieldProps) {
+  const [isFocused, setIsFocused] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  
+  const isSecure = secure && !showPassword;
+
+  return (
+    <View style={styles.fieldGroup}>
+      <Text style={styles.fieldLabel}>{label}</Text>
+      <View style={[styles.inputWrapper, isFocused && styles.inputWrapperFocused]}>
+        <Ionicons
+          name={icon}
+          size={18}
+          color={isFocused ? Colors.primary : Colors.accent}
+          style={styles.inputIcon}
+        />
+        <TextInput
+          style={styles.input}
+          placeholder={placeholder}
+          placeholderTextColor={Colors.accent}
+          keyboardType={keyboardType}
+          autoCapitalize={autoCapitalize}
+          autoCorrect={false}
+          secureTextEntry={isSecure}
+          value={value}
+          onChangeText={onChangeText}
+          onFocus={() => setIsFocused(true)}
+          onBlur={() => setIsFocused(false)}
+        />
+        {secure && (
+          <TouchableOpacity onPress={() => setShowPassword((v) => !v)} style={styles.eyeBtn}>
+            <Ionicons
+              name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+              size={18}
+              color={Colors.accent}
+            />
+          </TouchableOpacity>
+        )}
+      </View>
+    </View>
+  );
+}
+
 export default function LoginScreen() {
   const router = useRouter();
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
-  const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [emailFocused, setEmailFocused] = useState(false);
-  const [passwordFocused, setPasswordFocused] = useState(false);
 
   async function handleLogin() {
     if (!email.trim() || !password.trim()) {
@@ -57,132 +108,103 @@ export default function LoginScreen() {
     }
   }
 
-  return (
-    <KeyboardAvoidingView
-      style={styles.flex}
-      behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+  const content = (
+    <ScrollView
+      contentContainerStyle={styles.scroll}
+      keyboardShouldPersistTaps="handled"
+      showsVerticalScrollIndicator={false}
     >
-      <ScrollView
-        contentContainerStyle={styles.scroll}
-        keyboardShouldPersistTaps="handled"
-        showsVerticalScrollIndicator={false}
-      >
-        <View style={styles.heroWrapper}>
-          <Image source={{ uri: HERO_IMAGE }} style={styles.heroImage} resizeMode="cover" />
-          <View style={styles.heroOverlay} />
-          <View style={styles.heroBadge}>
-            <View style={styles.heroBadgeIcon}>
-              <Text style={styles.heroBadgeIconText}>S</Text>
-            </View>
-            <Text style={styles.heroBadgeLabel}>Swapr</Text>
+      <View style={styles.heroWrapper}>
+        <Image source={{ uri: HERO_IMAGE }} style={styles.heroImage} resizeMode="cover" />
+        <View style={styles.heroOverlay} />
+        <View style={styles.heroBadge}>
+          <View style={styles.heroBadgeIcon}>
+            <Text style={styles.heroBadgeIconText}>S</Text>
           </View>
-          <View style={styles.heroTextWrapper}>
-            <Text style={styles.heroTitle}>Swap Skills,</Text>
-            <Text style={styles.heroSubtitle}>Grow Together.</Text>
-          </View>
+          <Text style={styles.heroBadgeLabel}>Swapr</Text>
         </View>
+        <View style={styles.heroTextWrapper}>
+          <Text style={styles.heroTitle}>Swap Skills,</Text>
+          <Text style={styles.heroSubtitle}>Grow Together.</Text>
+        </View>
+      </View>
 
-        <View style={styles.card}>
-          <Text style={styles.cardTitle}>Welcome back</Text>
-          <Text style={styles.cardSubtitle}>Sign in to your Swapr account</Text>
+      <View style={styles.card}>
+        <Text style={styles.cardTitle}>Welcome back</Text>
+        <Text style={styles.cardSubtitle}>Sign in to your Swapr account</Text>
 
-          {error.length > 0 && (
-            <View style={styles.errorBanner}>
-              <Ionicons name="alert-circle-outline" size={16} color={Colors.error} />
-              <Text style={styles.errorText}>{error}</Text>
-            </View>
+        {error.length > 0 && (
+          <View style={styles.errorBanner}>
+            <Ionicons name="alert-circle-outline" size={16} color={Colors.error} />
+            <Text style={styles.errorText}>{error}</Text>
+          </View>
+        )}
+
+        <InputField
+          label="Email"
+          placeholder="you@example.com"
+          value={email}
+          onChangeText={setEmail}
+          icon="mail-outline"
+          keyboardType="email-address"
+          autoCapitalize="none"
+        />
+
+        <InputField
+          label="Password"
+          placeholder="Enter your password"
+          value={password}
+          onChangeText={setPassword}
+          icon="lock-closed-outline"
+          secure={true}
+          autoCapitalize="none"
+        />
+
+        <TouchableOpacity style={styles.forgotLink}>
+          <Text style={styles.forgotLinkText}>Forgot password?</Text>
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          style={[styles.primaryBtn, loading && styles.primaryBtnDisabled]}
+          onPress={handleLogin}
+          disabled={loading}
+          activeOpacity={0.85}
+        >
+          {loading ? (
+            <ActivityIndicator color={Colors.white} />
+          ) : (
+            <>
+              <Text style={styles.primaryBtnText}>Sign In</Text>
+              <Ionicons name="arrow-forward" size={18} color={Colors.white} />
+            </>
           )}
+        </TouchableOpacity>
 
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Email</Text>
-            <View style={[styles.inputWrapper, emailFocused && styles.inputWrapperFocused]}>
-              <Ionicons
-                name="mail-outline"
-                size={18}
-                color={emailFocused ? Colors.primary : Colors.accent}
-                style={styles.inputIcon}
-              />
-              <TextInput
-                style={styles.input}
-                placeholder="you@example.com"
-                placeholderTextColor={Colors.accent}
-                keyboardType="email-address"
-                autoCapitalize="none"
-                autoCorrect={false}
-                value={email}
-                onChangeText={setEmail}
-                onFocus={() => setEmailFocused(true)}
-                onBlur={() => setEmailFocused(false)}
-              />
-            </View>
-          </View>
-
-          <View style={styles.fieldGroup}>
-            <Text style={styles.fieldLabel}>Password</Text>
-            <View style={[styles.inputWrapper, passwordFocused && styles.inputWrapperFocused]}>
-              <Ionicons
-                name="lock-closed-outline"
-                size={18}
-                color={passwordFocused ? Colors.primary : Colors.accent}
-                style={styles.inputIcon}
-              />
-              <TextInput
-                style={styles.input}
-                placeholder="Enter your password"
-                placeholderTextColor={Colors.accent}
-                secureTextEntry={!showPassword}
-                autoCapitalize="none"
-                value={password}
-                onChangeText={setPassword}
-                onFocus={() => setPasswordFocused(true)}
-                onBlur={() => setPasswordFocused(false)}
-              />
-              <TouchableOpacity onPress={() => setShowPassword((v) => !v)} style={styles.eyeBtn}>
-                <Ionicons
-                  name={showPassword ? 'eye-off-outline' : 'eye-outline'}
-                  size={18}
-                  color={Colors.accent}
-                />
-              </TouchableOpacity>
-            </View>
-          </View>
-
-          <TouchableOpacity style={styles.forgotLink}>
-            <Text style={styles.forgotLinkText}>Forgot password?</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={[styles.primaryBtn, loading && styles.primaryBtnDisabled]}
-            onPress={handleLogin}
-            disabled={loading}
-            activeOpacity={0.85}
-          >
-            {loading ? (
-              <ActivityIndicator color={Colors.white} />
-            ) : (
-              <>
-                <Text style={styles.primaryBtnText}>Sign In</Text>
-                <Ionicons name="arrow-forward" size={18} color={Colors.white} />
-              </>
-            )}
-          </TouchableOpacity>
-
-          <View style={styles.dividerRow}>
-            <View style={styles.dividerLine} />
-            <Text style={styles.dividerText}>or</Text>
-            <View style={styles.dividerLine} />
-          </View>
-
-          <TouchableOpacity style={styles.secondaryBtn} onPress={() => router.push('/(auth)/signup')}>
-            <Text style={styles.secondaryBtnText}>
-              Don't have an account?{' '}
-              <Text style={styles.secondaryBtnHighlight}>Create one</Text>
-            </Text>
-          </TouchableOpacity>
+        <View style={styles.dividerRow}>
+          <View style={styles.dividerLine} />
+          <Text style={styles.dividerText}>or</Text>
+          <View style={styles.dividerLine} />
         </View>
-      </ScrollView>
-    </KeyboardAvoidingView>
+
+        <TouchableOpacity style={styles.secondaryBtn} onPress={() => router.push('/(auth)/signup')}>
+          <Text style={styles.secondaryBtnText}>
+            Don't have an account?{' '}
+            <Text style={styles.secondaryBtnHighlight}>Create one</Text>
+          </Text>
+        </TouchableOpacity>
+      </View>
+    </ScrollView>
   );
+
+  if (Platform.OS === 'ios') {
+    return (
+      <KeyboardAvoidingView style={styles.flex} behavior="padding">
+        {content}
+      </KeyboardAvoidingView>
+    );
+  }
+
+  return <View style={styles.flex}>{content}</View>;
 }
 
 const styles = StyleSheet.create({
@@ -318,11 +340,6 @@ const styles = StyleSheet.create({
   inputWrapperFocused: {
     borderColor: Colors.primary,
     backgroundColor: Colors.background,
-    shadowColor: Colors.primary,
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.12,
-    shadowRadius: 8,
-    elevation: 2,
   },
   inputIcon: {
     marginRight: 10,

@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
+import { useRouter } from 'expo-router';
 
 const CONVERSATIONS = [
   {
@@ -27,7 +28,7 @@ const CONVERSATIONS = [
     id: '2',
     user: 'Maya Chen',
     avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&h=200&fit=crop',
-    lastMessage: 'I\'d love to swap illustration for dev 🎨',
+    lastMessage: 'I\'d love to swap illustration for dev',
     timeAgo: '14m',
     unread: 1,
     online: true,
@@ -47,7 +48,7 @@ const CONVERSATIONS = [
     id: '4',
     user: 'Sam Oliver',
     avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=200&h=200&fit=crop',
-    lastMessage: 'You: Looking forward to our swap!',
+    lastMessage: 'Looking forward to our swap!',
     timeAgo: '3h',
     unread: 0,
     online: false,
@@ -77,6 +78,7 @@ const CONVERSATIONS = [
 
 export default function ChatScreen() {
   const [search, setSearch] = useState('');
+  const router = useRouter();
 
   const filtered = CONVERSATIONS.filter(
     (c) =>
@@ -118,13 +120,17 @@ export default function ChatScreen() {
           </View>
         </View>
         <TouchableOpacity>
-          <Text style={styles.requestBannerCta}>View →</Text>
+          <Text style={styles.requestBannerCta}>View</Text>
         </TouchableOpacity>
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.list}>
         {filtered.map((convo) => (
-          <TouchableOpacity key={convo.id} style={styles.row}>
+          <TouchableOpacity 
+            key={convo.id} 
+            style={styles.row}
+            onPress={() => router.push({ pathname: '/chat/[id]', params: { id: convo.id, user: convo.user, avatar: convo.avatar } })}
+          >
             <View style={styles.avatarWrapper}>
               <Image source={{ uri: convo.avatar }} style={styles.avatar} />
               {convo.online && <View style={styles.onlineDot} />}
