@@ -38,6 +38,19 @@
             "backgroundColor": "#000000"
           }
         }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Swapr needs access to your photos so you can upload a profile picture.",
+          "cameraPermission": "Swapr needs access to your camera so you can take a profile photo."
+        }
+      ],
+      [
+        "expo-location",
+        {
+          "locationWhenInUsePermission": "Swapr uses your location to show nearby skill swappers on the map."
+        }
       ]
     ],
     "experiments": {
