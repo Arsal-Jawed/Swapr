@@ -68,21 +68,20 @@ export default function ProfileScreen() {
   const [showPhotoModal, setShowPhotoModal] = useState(false);
   const [reviews, setReviews] = useState<Review[]>([]);
 
-  const fetchProfile = useCallback(async () => {
+  useEffect(() => {
     if (!user) return;
-    try {
-      const snap = await getDoc(doc(db, 'users', user.uid));
+    setLoadingProfile(true);
+    const unsubscribe = onSnapshot(doc(db, 'users', user.uid), (snap) => {
       if (snap.exists()) {
         setProfile(snap.data() as UserProfile);
       }
-    } finally {
       setLoadingProfile(false);
-    }
+    }, (error) => {
+      console.error("Error fetching profile:", error);
+      setLoadingProfile(false);
+    });
+    return unsubscribe;
   }, [user]);
-
-  useEffect(() => {
-    fetchProfile();
-  }, [fetchProfile]);
 
   useEffect(() => {
     if (!user) return;
@@ -280,7 +279,10 @@ export default function ProfileScreen() {
           </View>
 
           <View style={styles.actionRow}>
-            <TouchableOpacity style={styles.editBtn}>
+            <TouchableOpacity 
+              style={styles.editBtn} 
+              onPress={() => router.push('/edit-profile' as any)}
+            >
               <Ionicons name="pencil-outline" size={16} color={Colors.primary} />
               <Text style={styles.editBtnText}>Edit Profile</Text>
             </TouchableOpacity>
@@ -805,7 +807,7 @@ const styles = StyleSheet.create({
   reviewHeader: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
     marginBottom: 10,
   },
   reviewAvatar: {
