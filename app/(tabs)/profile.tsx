@@ -16,10 +16,10 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/context/AuthContext';
-import { auth, db, storage } from '@/firebaseConfig';
-import { doc, getDoc, updateDoc } from 'firebase/firestore';
-import { ref, uploadBytesResumable, getDownloadURL } from 'firebase/storage';
+import { auth, db } from '@/firebaseConfig';
+import { doc, getDoc, updateDoc, collection, query, where, onSnapshot } from 'firebase/firestore';
 import * as ImagePicker from 'expo-image-picker';
+import { resolveAvatarUri, saveAvatarFromPickedUri } from '@/lib/localAvatar';
 import { signOut } from 'firebase/auth';
 import { useRouter } from 'expo-router';
 
@@ -37,24 +37,15 @@ interface UserProfile {
   followers: number;
 }
 
-const REVIEWS = [
-  {
-    id: '1',
-    user: 'Maya Chen',
-    avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&h=200&fit=crop',
-    rating: 5,
-    text: 'Amazing to work with! Really delivered beyond expectations.',
-    timeAgo: '3d ago',
-  },
-  {
-    id: '2',
-    user: 'Jordan Park',
-    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&h=200&fit=crop',
-    rating: 5,
-    text: 'Very professional and easy to work with. Would swap again!',
-    timeAgo: '1w ago',
-  },
-];
+interface Review {
+  id: string;
+  reviewerId: string;
+  reviewerName: string;
+  reviewerAvatar: string;
+  rating: number;
+  text: string;
+  createdAt: any;
+}
 
 const PORTFOLIO_PLACEHOLDERS = [
   'https://images.unsplash.com/photo-1561070791-2526d30994b5?w=300&h=300&fit=crop',
@@ -75,6 +66,7 @@ export default function ProfileScreen() {
   const [uploading, setUploading] = useState(false);
   const [activeTab, setActiveTab] = useState<'portfolio' | 'skills' | 'reviews'>('portfolio');
   const [showPhotoModal, setShowPhotoModal] = useState(false);
+  const [reviews, setReviews] = useState<Review[]>([]);
 
   const fetchProfile = useCallback(async () => {
     if (!user) return;
@@ -91,6 +83,18 @@ export default function ProfileScreen() {
   useEffect(() => {
     fetchProfile();
   }, [fetchProfile]);
+
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'reviews'), where('targetId', '==', user.uid));
+    const unsubscribe = onSnapshot(q, (snapshot) => {
+      const revs: Review[] = [];
+      snapshot.forEach(docSnap => revs.push({ id: docSnap.id, ...docSnap.data() } as Review));
+      revs.sort((a, b) => (b.createdAt?.toMillis?.() || 0) - (a.createdAt?.toMillis?.() || 0));
+      setReviews(revs);
+    });
+    return unsubscribe;
+  }, [user]);
 
   async function requestCameraPermission() {
     const { status } = await ImagePicker.requestCameraPermissionsAsync();
@@ -139,36 +143,22 @@ export default function ProfileScreen() {
   }
 
   async function uploadAvatar(uri: string) {
-    if (!user) return;
+    if (!user || !uri) return;
     setUploading(true);
     setUploadProgress(0);
     try {
-      const response = await fetch(uri);
-      const blob = await response.blob();
-      const storageRef = ref(storage, `avatars/${user.uid}/profile.jpg`);
-      const uploadTask = uploadBytesResumable(storageRef, blob);
-
-      uploadTask.on(
-        'state_changed',
-        (snapshot) => {
-          const progress = (snapshot.bytesTransferred / snapshot.totalBytes) * 100;
-          setUploadProgress(Math.round(progress));
-        },
-        () => {
-          Alert.alert('Upload Failed', 'Could not upload your photo. Please try again.');
-          setUploading(false);
-        },
-        async () => {
-          const downloadURL = await getDownloadURL(uploadTask.snapshot.ref);
-          await updateDoc(doc(db, 'users', user.uid), { avatar: downloadURL });
-          setProfile((prev) => prev ? { ...prev, avatar: downloadURL } : prev);
-          setUploading(false);
-          setUploadProgress(0);
-        }
-      );
-    } catch {
-      Alert.alert('Upload Failed', 'Something went wrong. Please try again.');
+      setUploadProgress(40);
+      const relativePath = await saveAvatarFromPickedUri(uri, user.uid);
+      setUploadProgress(85);
+      await updateDoc(doc(db, 'users', user.uid), { avatar: relativePath });
+      setProfile((prev) => (prev ? { ...prev, avatar: relativePath } : prev));
+      setUploadProgress(100);
+    } catch (err) {
+      console.error('Avatar save failed:', err);
+      Alert.alert('Save Failed', 'Could not save your photo locally. Please try again.');
+    } finally {
       setUploading(false);
+      setUploadProgress(0);
     }
   }
 
@@ -213,6 +203,7 @@ export default function ProfileScreen() {
   const skillsNeeded = parseSkills(profile?.skillsNeeded ?? '');
   const displayName = profile?.name ?? user?.displayName ?? 'Swapr User';
   const emailHandle = (profile?.email ?? user?.email ?? '').split('@')[0];
+  const profileAvatarUri = resolveAvatarUri(profile?.avatar);
 
   return (
     <SafeAreaView style={styles.safeArea}>
@@ -243,8 +234,8 @@ export default function ProfileScreen() {
                     <Text style={styles.uploadProgressText}>{uploadProgress}%</Text>
                   </View>
                 </View>
-              ) : profile?.avatar ? (
-                <Image source={{ uri: profile.avatar }} style={styles.avatar} />
+              ) : profileAvatarUri ? (
+                <Image source={{ uri: profileAvatarUri }} style={styles.avatar} />
               ) : (
                 <View style={[styles.avatar, styles.avatarPlaceholder]}>
                   <Text style={styles.avatarInitials}>{getInitials(displayName)}</Text>
@@ -377,23 +368,48 @@ export default function ProfileScreen() {
 
         {activeTab === 'reviews' && (
           <View style={styles.reviewsList}>
-            {REVIEWS.map((review) => (
-              <View key={review.id} style={styles.reviewCard}>
-                <View style={styles.reviewHeader}>
-                  <Image source={{ uri: review.avatar }} style={styles.reviewAvatar} />
-                  <View style={styles.reviewMeta}>
-                    <Text style={styles.reviewUser}>{review.user}</Text>
-                    <View style={styles.reviewStars}>
-                      {Array.from({ length: 5 }).map((_, i) => (
-                        <Ionicons key={i} name="star" size={13} color={i < review.rating ? '#F59E0B' : Colors.border} />
-                      ))}
-                    </View>
-                  </View>
-                  <Text style={styles.reviewTime}>{review.timeAgo}</Text>
-                </View>
-                <Text style={styles.reviewText}>{review.text}</Text>
+            {reviews.length === 0 ? (
+              <View style={{ alignItems: 'center', marginTop: 40, gap: 10 }}>
+                <Ionicons name="star-outline" size={40} color={Colors.border} />
+                <Text style={{ color: Colors.textSecondary, fontWeight: '500' }}>No reviews yet.</Text>
               </View>
-            ))}
+            ) : (
+              reviews.map((review) => {
+                let timeAgo = 'Just now';
+                if (review.createdAt) {
+                  const diff = Date.now() - review.createdAt.toMillis();
+                  const days = Math.floor(diff / (1000 * 60 * 60 * 24));
+                  if (days > 0) timeAgo = `${days}d ago`;
+                  else {
+                    const hours = Math.floor(diff / (1000 * 60 * 60));
+                    if (hours > 0) timeAgo = `${hours}h ago`;
+                  }
+                }
+                return (
+                  <View key={review.id} style={styles.reviewCard}>
+                    <View style={styles.reviewHeader}>
+                      {resolveAvatarUri(review.reviewerAvatar) ? (
+                        <Image source={{ uri: resolveAvatarUri(review.reviewerAvatar)! }} style={styles.reviewAvatar} />
+                      ) : (
+                        <View style={[styles.reviewAvatar, { backgroundColor: Colors.primary, alignItems: 'center', justifyContent: 'center' }]}>
+                          <Text style={{ color: '#fff', fontSize: 16, fontWeight: '800' }}>{getInitials(review.reviewerName)}</Text>
+                        </View>
+                      )}
+                      <View style={styles.reviewMeta}>
+                        <Text style={styles.reviewUser}>{review.reviewerName}</Text>
+                        <View style={styles.reviewStars}>
+                          {Array.from({ length: 5 }).map((_, i) => (
+                            <Ionicons key={i} name="star" size={13} color={i < review.rating ? '#F59E0B' : Colors.border} />
+                          ))}
+                        </View>
+                      </View>
+                      <Text style={styles.reviewTime}>{timeAgo}</Text>
+                    </View>
+                    <Text style={styles.reviewText}>{review.text}</Text>
+                  </View>
+                );
+              })
+            )}
           </View>
         )}
 

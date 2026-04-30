@@ -11,13 +11,17 @@ import {
   ScrollView,
   ActivityIndicator,
   Dimensions,
+  Modal,
+  Alert,
 } from 'react-native';
 import { createUserWithEmailAndPassword, updateProfile } from 'firebase/auth';
 import { doc, setDoc, serverTimestamp } from 'firebase/firestore';
 import { auth, db } from '@/firebaseConfig';
+import { saveAvatarFromPickedUri } from '@/lib/localAvatar';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
+import * as ImagePicker from 'expo-image-picker';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -123,6 +127,54 @@ export default function SignupScreen() {
 
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const [avatarUri, setAvatarUri] = useState<string | null>(null);
+  const [showPhotoModal, setShowPhotoModal] = useState(false);
+
+  async function requestCameraPermission() {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    return status === 'granted';
+  }
+
+  async function requestMediaPermission() {
+    const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+    return status === 'granted';
+  }
+
+  async function pickFromCamera() {
+    setShowPhotoModal(false);
+    const granted = await requestCameraPermission();
+    if (!granted) {
+      Alert.alert('Permission Required', 'Camera access is needed to take a photo. Please enable it in your device settings.');
+      return;
+    }
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      setAvatarUri(result.assets[0].uri);
+    }
+  }
+
+  async function pickFromGallery() {
+    setShowPhotoModal(false);
+    const granted = await requestMediaPermission();
+    if (!granted) {
+      Alert.alert('Permission Required', 'Photo library access is needed. Please enable it in your device settings.');
+      return;
+    }
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ['images'],
+      allowsEditing: true,
+      aspect: [1, 1],
+      quality: 0.8,
+    });
+    if (!result.canceled && result.assets.length > 0) {
+      setAvatarUri(result.assets[0].uri);
+    }
+  }
 
   function updateField(key: FieldConfig['key'], value: string) {
     setForm((prev) => ({ ...prev, [key]: value }));
@@ -151,7 +203,19 @@ export default function SignupScreen() {
       const credential = await createUserWithEmailAndPassword(auth, form.email.trim(), form.password);
       const { user } = credential;
 
-      await updateProfile(user, { displayName: form.name.trim() });
+      let avatarStoredPath = '';
+
+      if (avatarUri) {
+        try {
+          avatarStoredPath = await saveAvatarFromPickedUri(avatarUri, user.uid);
+        } catch (uploadError) {
+          console.error('Avatar save failed:', uploadError);
+        }
+      }
+
+      await updateProfile(user, {
+        displayName: form.name.trim(),
+      });
 
       await setDoc(doc(db, 'users', user.uid), {
         uid: user.uid,
@@ -159,7 +223,7 @@ export default function SignupScreen() {
         email: form.email.trim(),
         skillsOffered: form.skillsOffered.trim(),
         skillsNeeded: form.skillsNeeded.trim(),
-        avatar: '',
+        avatar: avatarStoredPath,
         rating: 0,
         swapsCompleted: 0,
         followers: 0,
@@ -208,6 +272,22 @@ export default function SignupScreen() {
         <View style={styles.card}>
           <Text style={styles.cardTitle}>Create Account</Text>
           <Text style={styles.cardSubtitle}>It's free and only takes a minute</Text>
+
+          <View style={styles.avatarPickerContainer}>
+            <TouchableOpacity style={styles.avatarPicker} onPress={() => setShowPhotoModal(true)}>
+              {avatarUri ? (
+                <Image source={{ uri: avatarUri }} style={styles.avatarImage} />
+              ) : (
+                <View style={styles.avatarPlaceholder}>
+                  <Ionicons name="camera" size={32} color={Colors.white} />
+                </View>
+              )}
+              <View style={styles.avatarEditBadge}>
+                <Ionicons name="pencil" size={14} color={Colors.white} />
+              </View>
+            </TouchableOpacity>
+            <Text style={styles.avatarPickerLabel}>Profile Photo (Optional)</Text>
+          </View>
 
           {error.length > 0 && (
             <View style={styles.errorBanner}>
@@ -275,6 +355,52 @@ export default function SignupScreen() {
           </TouchableOpacity>
         </View>
       </ScrollView>
+
+      <Modal
+        visible={showPhotoModal}
+        transparent
+        animationType="slide"
+        onRequestClose={() => setShowPhotoModal(false)}
+      >
+        <TouchableOpacity
+          style={styles.modalBackdrop}
+          activeOpacity={1}
+          onPress={() => setShowPhotoModal(false)}
+        >
+          <View style={styles.modalSheet}>
+            <View style={styles.modalHandle} />
+            <Text style={styles.modalTitle}>Add Profile Photo</Text>
+            <Text style={styles.modalSubtitle}>Choose how you'd like to add a photo</Text>
+
+            <TouchableOpacity style={styles.modalOption} onPress={pickFromCamera}>
+              <View style={styles.modalOptionIcon}>
+                <Ionicons name="camera" size={24} color={Colors.primary} />
+              </View>
+              <View style={styles.modalOptionText}>
+                <Text style={styles.modalOptionTitle}>Take a Photo</Text>
+                <Text style={styles.modalOptionSub}>Open your camera and snap a live photo</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.accent} />
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.modalOption} onPress={pickFromGallery}>
+              <View style={styles.modalOptionIcon}>
+                <Ionicons name="images" size={24} color={Colors.primary} />
+              </View>
+              <View style={styles.modalOptionText}>
+                <Text style={styles.modalOptionTitle}>Choose from Gallery</Text>
+                <Text style={styles.modalOptionSub}>Pick an existing photo from your library</Text>
+              </View>
+              <Ionicons name="chevron-forward" size={18} color={Colors.accent} />
+            </TouchableOpacity>
+
+            <TouchableOpacity style={styles.modalCancel} onPress={() => setShowPhotoModal(false)}>
+              <Text style={styles.modalCancelText}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
+        </TouchableOpacity>
+      </Modal>
+
     </Container>
   );
 }
@@ -354,7 +480,50 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: Colors.textSecondary,
     fontWeight: '500',
+    marginBottom: 20,
+  },
+  avatarPickerContainer: {
+    alignItems: 'center',
     marginBottom: 24,
+  },
+  avatarPicker: {
+    position: 'relative',
+    marginBottom: 10,
+  },
+  avatarPlaceholder: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 3,
+    borderColor: '#E0E7FF',
+  },
+  avatarImage: {
+    width: 90,
+    height: 90,
+    borderRadius: 45,
+    borderWidth: 3,
+    borderColor: Colors.primary,
+  },
+  avatarEditBadge: {
+    position: 'absolute',
+    bottom: 0,
+    right: 0,
+    backgroundColor: Colors.primaryDark,
+    width: 28,
+    height: 28,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 2,
+    borderColor: Colors.background,
+  },
+  avatarPickerLabel: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontWeight: '600',
   },
   errorBanner: {
     flexDirection: 'row',
@@ -502,5 +671,80 @@ const styles = StyleSheet.create({
   loginLinkHighlight: {
     color: Colors.primary,
     fontWeight: '800',
+  },
+  modalBackdrop: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'flex-end',
+  },
+  modalSheet: {
+    backgroundColor: Colors.background,
+    borderTopLeftRadius: 28,
+    borderTopRightRadius: 28,
+    paddingHorizontal: 24,
+    paddingTop: 12,
+    paddingBottom: Platform.OS === 'ios' ? 36 : 24,
+  },
+  modalHandle: {
+    width: 40,
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: Colors.border,
+    alignSelf: 'center',
+    marginBottom: 20,
+  },
+  modalTitle: {
+    fontSize: 20,
+    fontWeight: '800',
+    color: Colors.text,
+    marginBottom: 4,
+  },
+  modalSubtitle: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    fontWeight: '500',
+    marginBottom: 24,
+  },
+  modalOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+    paddingVertical: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: Colors.border,
+  },
+  modalOptionIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    backgroundColor: Colors.surface,
+    borderWidth: 1,
+    borderColor: Colors.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  modalOptionText: {
+    flex: 1,
+  },
+  modalOptionTitle: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.text,
+    marginBottom: 2,
+  },
+  modalOptionSub: {
+    fontSize: 12,
+    color: Colors.textMuted,
+    fontWeight: '400',
+  },
+  modalCancel: {
+    alignItems: 'center',
+    paddingVertical: 18,
+    marginTop: 4,
+  },
+  modalCancelText: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: Colors.error,
   },
 });

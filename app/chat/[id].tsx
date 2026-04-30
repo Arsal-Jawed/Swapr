@@ -16,6 +16,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/context/AuthContext';
 import { db } from '@/firebaseConfig';
+import { resolveAvatarUri } from '@/lib/localAvatar';
 import {
   collection,
   onSnapshot,
@@ -34,7 +35,10 @@ interface MessageDoc {
 }
 
 export default function ChatRoomScreen() {
-  const { id, user: otherUserName, avatar: otherUserAvatar } = useLocalSearchParams<{ id: string; user: string; avatar: string }>();
+  const params = useLocalSearchParams<{ id: string; user: string; avatar: string }>();
+  const { id, user: otherUserName, avatar: otherUserAvatarRaw } = params;
+  const otherUserAvatar = Array.isArray(otherUserAvatarRaw) ? otherUserAvatarRaw[0] : otherUserAvatarRaw;
+  const headerAvatarUri = resolveAvatarUri(otherUserAvatar);
   const router = useRouter();
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
@@ -94,8 +98,8 @@ export default function ChatRoomScreen() {
         </TouchableOpacity>
         
         <View style={styles.userInfo}>
-          {otherUserAvatar ? (
-            <Image source={{ uri: otherUserAvatar }} style={styles.avatar} />
+          {headerAvatarUri ? (
+            <Image source={{ uri: headerAvatarUri }} style={styles.avatar} />
           ) : (
             <View style={[styles.avatar, styles.placeholderAvatar]}>
               <Ionicons name="person" size={20} color={Colors.white} />

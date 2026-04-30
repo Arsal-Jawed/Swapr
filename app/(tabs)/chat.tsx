@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -8,91 +8,149 @@ import {
   Image,
   TextInput,
   SafeAreaView,
+  ActivityIndicator,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 import { useRouter } from 'expo-router';
+import { useAuth } from '@/context/AuthContext';
+import { db } from '@/firebaseConfig';
+import { resolveAvatarUri } from '@/lib/localAvatar';
+import { collection, query, where, onSnapshot, orderBy, limit } from 'firebase/firestore';
 
-const CONVERSATIONS = [
-  {
-    id: '1',
-    user: 'Alex Reyes',
-    avatar: 'https://images.unsplash.com/photo-1507003211169-0a1dd7228f2d?w=200&h=200&fit=crop',
-    lastMessage: 'Sounds great! Can we meet Thursday?',
-    timeAgo: '2m',
-    unread: 3,
-    online: true,
-    skill: 'UI/UX Design',
-  },
-  {
-    id: '2',
-    user: 'Maya Chen',
-    avatar: 'https://images.unsplash.com/photo-1494790108377-be9c29b29330?w=200&h=200&fit=crop',
-    lastMessage: 'I\'d love to swap illustration for dev',
-    timeAgo: '14m',
-    unread: 1,
-    online: true,
-    skill: 'Illustration',
-  },
-  {
-    id: '3',
-    user: 'Jordan Park',
-    avatar: 'https://images.unsplash.com/photo-1500648767791-00dcc994a43e?w=200&h=200&fit=crop',
-    lastMessage: 'Sent you the portfolio link!',
-    timeAgo: '1h',
-    unread: 0,
-    online: false,
-    skill: 'Photography',
-  },
-  {
-    id: '4',
-    user: 'Sam Oliver',
-    avatar: 'https://images.unsplash.com/photo-1438761681033-6461ffad8d80?w=200&h=200&fit=crop',
-    lastMessage: 'Looking forward to our swap!',
-    timeAgo: '3h',
-    unread: 0,
-    online: false,
-    skill: 'Video Editing',
-  },
-  {
-    id: '5',
-    user: 'Priya Nair',
-    avatar: 'https://images.unsplash.com/photo-1534528741775-53994a69daeb?w=200&h=200&fit=crop',
-    lastMessage: 'Thanks for the session, really helpful!',
-    timeAgo: '1d',
-    unread: 0,
-    online: true,
-    skill: 'Writing',
-  },
-  {
-    id: '6',
-    user: 'Leo Martinez',
-    avatar: 'https://images.unsplash.com/photo-1547425260-76bcadfb4f2c?w=200&h=200&fit=crop',
-    lastMessage: 'When are you free next week?',
-    timeAgo: '2d',
-    unread: 0,
-    online: false,
-    skill: 'Music Production',
-  },
-];
+interface ConversationItem {
+  swapId: string;
+  conversationId: string;
+  partnerName: string;
+  partnerAvatar: string;
+  partnerSkill: string;
+  updatedAt: number;
+}
 
 export default function ChatScreen() {
-  const [search, setSearch] = useState('');
+  const { user } = useAuth();
   const router = useRouter();
+  const [search, setSearch] = useState('');
+  
+  const [conversations, setConversations] = useState<ConversationItem[]>([]);
+  const [pendingCount, setPendingCount] = useState(0);
+  const [loading, setLoading] = useState(true);
 
-  const filtered = CONVERSATIONS.filter(
+  // Stores the last message for each conversationId
+  const [lastMessages, setLastMessages] = useState<Record<string, { text: string; time: string }>>({});
+
+  useEffect(() => {
+    if (!user) return;
+
+    // 1. Pending requests count
+    const reqQ = query(
+      collection(db, 'swapRequests'),
+      where('toUserId', '==', user.uid),
+      where('status', '==', 'pending')
+    );
+    const unsubReq = onSnapshot(reqQ, (snap) => {
+      setPendingCount(snap.size);
+    });
+
+    // 2. Active swaps as user1
+    const swapQ1 = query(collection(db, 'swaps'), where('user1Id', '==', user.uid), where('status', '==', 'active'));
+    // 3. Active swaps as user2
+    const swapQ2 = query(collection(db, 'swaps'), where('user2Id', '==', user.uid), where('status', '==', 'active'));
+
+    let swaps1: any[] = [];
+    let swaps2: any[] = [];
+
+    const updateConversations = () => {
+      const allSwaps = [...swaps1, ...swaps2];
+      const items: ConversationItem[] = allSwaps.map((s) => {
+        const isUser1 = s.user1Id === user.uid;
+        return {
+          swapId: s.id,
+          conversationId: s.conversationId,
+          partnerName: isUser1 ? s.user2Name : s.user1Name,
+          partnerAvatar: isUser1 ? s.user2Avatar : s.user1Avatar,
+          partnerSkill: isUser1 ? s.user2SkillsOffered : s.user1SkillsOffered,
+          updatedAt: s.createdAt?.toMillis?.() || 0,
+        };
+      });
+      // Sort initially by swap creation time
+      items.sort((a, b) => b.updatedAt - a.updatedAt);
+      setConversations(items);
+      setLoading(false);
+    };
+
+    const unsub1 = onSnapshot(swapQ1, (snap) => {
+      swaps1 = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      updateConversations();
+    });
+    const unsub2 = onSnapshot(swapQ2, (snap) => {
+      swaps2 = snap.docs.map((d) => ({ id: d.id, ...d.data() }));
+      updateConversations();
+    });
+
+    return () => {
+      unsubReq();
+      unsub1();
+      unsub2();
+    };
+  }, [user]);
+
+  // Fetch the last message for each active conversation
+  useEffect(() => {
+    const unsubs: (() => void)[] = [];
+
+    conversations.forEach((conv) => {
+      const msgQ = query(
+        collection(db, 'conversations', conv.conversationId, 'messages'),
+        orderBy('createdAt', 'desc'),
+        limit(1)
+      );
+      
+      const unsub = onSnapshot(msgQ, (snap) => {
+        if (!snap.empty) {
+          const data = snap.docs[0].data();
+          let timeAgo = 'Just now';
+          
+          if (data.createdAt) {
+            const diffMs = Date.now() - data.createdAt.toMillis();
+            const mins = Math.floor(diffMs / 60000);
+            if (mins < 1) timeAgo = 'Just now';
+            else if (mins < 60) timeAgo = `${mins}m`;
+            else if (mins < 1440) timeAgo = `${Math.floor(mins / 60)}h`;
+            else timeAgo = `${Math.floor(mins / 1440)}d`;
+          }
+
+          setLastMessages((prev) => ({
+            ...prev,
+            [conv.conversationId]: {
+              text: data.text || '📷 Attachment',
+              time: timeAgo,
+            },
+          }));
+        }
+      });
+      unsubs.push(unsub);
+    });
+
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [conversations]);
+
+  function getInitials(name: string): string {
+    return name.split(' ').slice(0, 2).map((w) => w[0] ?? '').join('').toUpperCase();
+  }
+
+  const filtered = conversations.filter(
     (c) =>
-      c.user.toLowerCase().includes(search.toLowerCase()) ||
-      c.skill.toLowerCase().includes(search.toLowerCase())
+      c.partnerName.toLowerCase().includes(search.toLowerCase()) ||
+      c.partnerSkill.toLowerCase().includes(search.toLowerCase())
   );
 
   return (
     <SafeAreaView style={styles.safeArea}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Messages</Text>
-        <TouchableOpacity style={styles.composeBtn}>
-          <Ionicons name="create-outline" size={22} color={Colors.primary} />
-        </TouchableOpacity>
       </View>
 
       <View style={styles.searchBar}>
@@ -111,59 +169,87 @@ export default function ChatScreen() {
         )}
       </View>
 
-      <View style={styles.requestBanner}>
-        <View style={styles.requestBannerLeft}>
-          <Ionicons name="swap-horizontal" size={20} color={Colors.primary} />
-          <View>
-            <Text style={styles.requestBannerTitle}>2 Swap Requests</Text>
-            <Text style={styles.requestBannerSub}>People want to swap skills with you</Text>
+      {pendingCount > 0 && (
+        <TouchableOpacity 
+          style={styles.requestBanner}
+          activeOpacity={0.8}
+          onPress={() => router.push('/(tabs)/swaps')}
+        >
+          <View style={styles.requestBannerLeft}>
+            <View style={styles.bannerIconWrapper}>
+              <Ionicons name="swap-horizontal" size={20} color={Colors.white} />
+            </View>
+            <View>
+              <Text style={styles.requestBannerTitle}>{pendingCount} Swap Request{pendingCount > 1 ? 's' : ''}</Text>
+              <Text style={styles.requestBannerSub}>People want to swap skills with you</Text>
+            </View>
           </View>
-        </View>
-        <TouchableOpacity>
-          <Text style={styles.requestBannerCta}>View</Text>
+          <View style={styles.requestBannerRight}>
+            <Text style={styles.requestBannerCta}>View</Text>
+            <Ionicons name="chevron-forward" size={16} color={Colors.primary} />
+          </View>
         </TouchableOpacity>
-      </View>
+      )}
 
-      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.list}>
-        {filtered.map((convo) => (
-          <TouchableOpacity 
-            key={convo.id} 
-            style={styles.row}
-            onPress={() => router.push({ pathname: '/chat/[id]', params: { id: convo.id, user: convo.user, avatar: convo.avatar } })}
-          >
-            <View style={styles.avatarWrapper}>
-              <Image source={{ uri: convo.avatar }} style={styles.avatar} />
-              {convo.online && <View style={styles.onlineDot} />}
+      {loading ? (
+        <View style={styles.centerContainer}>
+          <ActivityIndicator size="large" color={Colors.primary} />
+        </View>
+      ) : (
+        <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.list}>
+          {filtered.length === 0 ? (
+            <View style={styles.emptyContainer}>
+              <Ionicons name="chatbubbles-outline" size={48} color={Colors.border} />
+              <Text style={styles.emptyText}>No active conversations</Text>
+              <Text style={styles.emptySubText}>Accept a swap request to start chatting</Text>
             </View>
-
-            <View style={styles.rowContent}>
-              <View style={styles.rowHeader}>
-                <Text style={styles.rowName}>{convo.user}</Text>
-                <Text style={[styles.rowTime, convo.unread > 0 && styles.rowTimeUnread]}>
-                  {convo.timeAgo}
-                </Text>
-              </View>
-              <View style={styles.rowFooter}>
-                <Text
-                  style={[styles.rowMessage, convo.unread > 0 && styles.rowMessageUnread]}
-                  numberOfLines={1}
+          ) : (
+            filtered.map((convo) => {
+              const lastMsg = lastMessages[convo.conversationId];
+              const rowAvatarUri = resolveAvatarUri(convo.partnerAvatar);
+              return (
+                <TouchableOpacity 
+                  key={convo.swapId} 
+                  style={styles.row}
+                  activeOpacity={0.7}
+                  onPress={() => router.push({ 
+                    pathname: '/chat/[id]', 
+                    params: { id: convo.conversationId, user: convo.partnerName, avatar: convo.partnerAvatar } 
+                  })}
                 >
-                  {convo.lastMessage}
-                </Text>
-                {convo.unread > 0 && (
-                  <View style={styles.badge}>
-                    <Text style={styles.badgeText}>{convo.unread}</Text>
+                  <View style={styles.avatarWrapper}>
+                    {rowAvatarUri ? (
+                      <Image source={{ uri: rowAvatarUri }} style={styles.avatar} />
+                    ) : (
+                      <View style={[styles.avatar, styles.placeholderAvatar]}>
+                        <Text style={styles.initialsText}>{getInitials(convo.partnerName)}</Text>
+                      </View>
+                    )}
                   </View>
-                )}
-              </View>
-              <View style={styles.skillTag}>
-                <Ionicons name="flash-outline" size={10} color={Colors.primary} />
-                <Text style={styles.skillTagText}>{convo.skill}</Text>
-              </View>
-            </View>
-          </TouchableOpacity>
-        ))}
-      </ScrollView>
+
+                  <View style={styles.rowContent}>
+                    <View style={styles.rowHeader}>
+                      <Text style={styles.rowName}>{convo.partnerName}</Text>
+                      {lastMsg && (
+                        <Text style={styles.rowTime}>{lastMsg.time}</Text>
+                      )}
+                    </View>
+                    <View style={styles.rowFooter}>
+                      <Text style={styles.rowMessage} numberOfLines={1}>
+                        {lastMsg ? lastMsg.text : 'Tap to start chatting...'}
+                      </Text>
+                    </View>
+                    <View style={styles.skillTag}>
+                      <Ionicons name="flash-outline" size={10} color={Colors.primary} />
+                      <Text style={styles.skillTagText}>{convo.partnerSkill || 'No skills listed'}</Text>
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              );
+            })
+          )}
+        </ScrollView>
+      )}
     </SafeAreaView>
   );
 }
@@ -185,16 +271,6 @@ const styles = StyleSheet.create({
     fontSize: 26,
     fontWeight: '800',
     color: Colors.text,
-  },
-  composeBtn: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: Colors.surface,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: Colors.border,
   },
   searchBar: {
     flexDirection: 'row',
@@ -221,32 +297,51 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     marginHorizontal: 20,
     marginBottom: 16,
-    backgroundColor: Colors.surface,
+    backgroundColor: '#F3E8FF',
     borderRadius: 16,
     padding: 14,
     borderWidth: 1.5,
-    borderColor: Colors.primary,
+    borderColor: '#D8B4FE',
   },
   requestBannerLeft: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 10,
+    gap: 12,
+  },
+  bannerIconWrapper: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   requestBannerTitle: {
-    fontSize: 13,
-    fontWeight: '700',
+    fontSize: 14,
+    fontWeight: '800',
     color: Colors.primary,
   },
   requestBannerSub: {
     fontSize: 11,
-    color: Colors.textSecondary,
+    color: Colors.primary,
     fontWeight: '500',
-    marginTop: 1,
+    marginTop: 2,
+    opacity: 0.8,
+  },
+  requestBannerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 2,
   },
   requestBannerCta: {
     fontSize: 13,
-    fontWeight: '700',
+    fontWeight: '800',
     color: Colors.primary,
+  },
+  centerContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
   list: {
     paddingHorizontal: 20,
@@ -270,16 +365,15 @@ const styles = StyleSheet.create({
     borderWidth: 2,
     borderColor: Colors.border,
   },
-  onlineDot: {
-    position: 'absolute',
-    bottom: 1,
-    right: 1,
-    width: 13,
-    height: 13,
-    borderRadius: 6.5,
-    backgroundColor: Colors.success,
-    borderWidth: 2,
-    borderColor: Colors.background,
+  placeholderAvatar: {
+    backgroundColor: Colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  initialsText: {
+    color: Colors.white,
+    fontSize: 18,
+    fontWeight: '800',
   },
   rowContent: {
     flex: 1,
@@ -291,58 +385,51 @@ const styles = StyleSheet.create({
     marginBottom: 3,
   },
   rowName: {
-    fontSize: 15,
+    fontSize: 16,
     fontWeight: '700',
     color: Colors.text,
   },
   rowTime: {
     fontSize: 11,
-    color: Colors.accent,
+    color: Colors.textMuted,
     fontWeight: '500',
-  },
-  rowTimeUnread: {
-    color: Colors.primary,
-    fontWeight: '700',
   },
   rowFooter: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    marginBottom: 4,
+    marginBottom: 6,
   },
   rowMessage: {
     fontSize: 13,
-    color: Colors.textMuted,
+    color: Colors.textSecondary,
     fontWeight: '400',
     flex: 1,
     marginRight: 8,
   },
-  rowMessageUnread: {
-    color: Colors.text,
-    fontWeight: '600',
-  },
-  badge: {
-    backgroundColor: Colors.primary,
-    borderRadius: 10,
-    minWidth: 20,
-    height: 20,
-    alignItems: 'center',
-    justifyContent: 'center',
-    paddingHorizontal: 5,
-  },
-  badgeText: {
-    fontSize: 11,
-    fontWeight: '800',
-    color: Colors.white,
-  },
   skillTag: {
     flexDirection: 'row',
     alignItems: 'center',
-    gap: 3,
+    gap: 4,
   },
   skillTagText: {
     fontSize: 11,
     color: Colors.primary,
     fontWeight: '600',
+  },
+  emptyContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 60,
+    gap: 12,
+  },
+  emptyText: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: Colors.textSecondary,
+  },
+  emptySubText: {
+    fontSize: 13,
+    color: Colors.textMuted,
   },
 });

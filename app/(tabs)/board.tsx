@@ -20,6 +20,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 import { useAuth } from '@/context/AuthContext';
 import { db } from '@/firebaseConfig';
+import { resolveAvatarUri, isRemoteAvatarUrl } from '@/lib/localAvatar';
 import {
   collection,
   onSnapshot,
@@ -31,7 +32,6 @@ import {
   orderBy,
   getDoc,
   arrayUnion,
-  arrayRemove,
 } from 'firebase/firestore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -94,14 +94,16 @@ function getInitials(name: string): string {
 interface RequestCardProps {
   item: RequestDoc;
   currentUserId: string;
+  isOwnPost: boolean;
   onOfferHelp: (item: RequestDoc) => void;
 }
 
-function RequestCard({ item, currentUserId, onOfferHelp }: RequestCardProps) {
+function RequestCard({ item, currentUserId, isOwnPost, onOfferHelp }: RequestCardProps) {
   const urgencyStyle = getUrgencyStyle(item.urgency);
   const hasOffered = item.offeredBy?.includes(currentUserId);
   const offerCount = item.offeredBy?.length ?? 0;
   const scaleAnim = useRef(new Animated.Value(1)).current;
+  const authorAvatarUri = resolveAvatarUri(item.authorAvatar);
 
   function handleOfferPress() {
     Animated.sequence([
@@ -128,8 +130,8 @@ function RequestCard({ item, currentUserId, onOfferHelp }: RequestCardProps) {
       </View>
 
       <View style={styles.cardAuthorRow}>
-        {item.authorAvatar ? (
-          <Image source={{ uri: item.authorAvatar }} style={styles.avatar} />
+        {authorAvatarUri ? (
+          <Image source={{ uri: authorAvatarUri }} style={styles.avatar} />
         ) : (
           <View style={[styles.avatar, styles.avatarPlaceholder]}>
             <Text style={styles.avatarInitials}>{getInitials(item.authorName)}</Text>
@@ -158,20 +160,28 @@ function RequestCard({ item, currentUserId, onOfferHelp }: RequestCardProps) {
           </View>
         </View>
         <Animated.View style={{ transform: [{ scale: scaleAnim }] }}>
-          <TouchableOpacity
-            style={[styles.offerBtn, hasOffered && styles.offerBtnActive]}
-            onPress={handleOfferPress}
-            activeOpacity={0.85}
-          >
-            <Ionicons
-              name={hasOffered ? 'hand-left' : 'hand-left-outline'}
-              size={15}
-              color={hasOffered ? Colors.white : Colors.primary}
-            />
-            <Text style={[styles.offerBtnText, hasOffered && styles.offerBtnTextActive]}>
-              {hasOffered ? 'Helping' : 'Offer Help'}
-            </Text>
-          </TouchableOpacity>
+          {isOwnPost ? (
+            <View style={[styles.offerBtn, styles.offerBtnOwn]}>
+              <Ionicons name="person-outline" size={15} color={Colors.textMuted} />
+              <Text style={[styles.offerBtnText, styles.offerBtnOwnText]}>Your Post</Text>
+            </View>
+          ) : (
+            <TouchableOpacity
+              style={[styles.offerBtn, hasOffered && styles.offerBtnActive]}
+              onPress={handleOfferPress}
+              activeOpacity={0.85}
+              disabled={hasOffered}
+            >
+              <Ionicons
+                name={hasOffered ? 'checkmark-circle' : 'hand-left-outline'}
+                size={15}
+                color={hasOffered ? Colors.white : Colors.primary}
+              />
+              <Text style={[styles.offerBtnText, hasOffered && styles.offerBtnTextActive]}>
+                {hasOffered ? 'Requested' : 'Offer Help'}
+              </Text>
+            </TouchableOpacity>
+          )}
         </Animated.View>
       </View>
     </View>
@@ -208,9 +218,10 @@ export default function BoardScreen() {
   const [postUrgency, setPostUrgency] = useState<UrgencyLevel>('Normal');
   const [posting, setPosting] = useState(false);
 
-  const [authorProfile, setAuthorProfile] = useState<{ name: string; avatar: string }>({
+  const [authorProfile, setAuthorProfile] = useState<{ name: string; avatar: string; skillsOffered: string }>({
     name: user?.displayName ?? 'Swapr User',
     avatar: '',
+    skillsOffered: '',
   });
 
   useEffect(() => {
@@ -221,6 +232,7 @@ export default function BoardScreen() {
         setAuthorProfile({
           name: data.name ?? user.displayName ?? 'Swapr User',
           avatar: data.avatar ?? '',
+          skillsOffered: data.skillsOffered ?? '',
         });
       }
     });
@@ -249,19 +261,39 @@ export default function BoardScreen() {
     return r.skillCategory?.toLowerCase() === activeFilter.toLowerCase();
   });
 
+  const modalAuthorAvatarUri = resolveAvatarUri(authorProfile.avatar);
+
   const handleOfferHelp = useCallback(
     async (item: RequestDoc) => {
       if (!user) return;
+      // Guard: own post or already offered
+      if (item.authorId === user.uid) return;
       const hasOffered = item.offeredBy?.includes(user.uid);
+      if (hasOffered) return;
+
       try {
+        // Write swap request to Firestore
+        await addDoc(collection(db, 'swapRequests'), {
+          fromUserId: user.uid,
+          fromUserName: authorProfile.name,
+          fromUserAvatar: isRemoteAvatarUrl(authorProfile.avatar) ? authorProfile.avatar : '',
+          fromSkillsOffered: authorProfile.skillsOffered,
+          toUserId: item.authorId,
+          type: 'offer',
+          sourceId: item.id,
+          status: 'pending',
+          createdAt: serverTimestamp(),
+        });
+
+        // Update offeredBy array for visual count on the post card
         await updateDoc(doc(db, 'requests', item.id), {
-          offeredBy: hasOffered ? arrayRemove(user.uid) : arrayUnion(user.uid),
+          offeredBy: arrayUnion(user.uid),
         });
       } catch {
-        Alert.alert('Error', 'Could not update. Please try again.');
+        Alert.alert('Error', 'Could not send offer. Please try again.');
       }
     },
-    [user]
+    [user, authorProfile]
   );
 
   async function handlePost() {
@@ -273,10 +305,11 @@ export default function BoardScreen() {
     setPosting(true);
     try {
       const fallbackAvatar = FALLBACK_AVATARS[Math.floor(Math.random() * FALLBACK_AVATARS.length)];
+      const publicAuthorAvatar = isRemoteAvatarUrl(authorProfile.avatar) ? authorProfile.avatar : fallbackAvatar;
       await addDoc(collection(db, 'requests'), {
         authorId: user.uid,
         authorName: authorProfile.name,
-        authorAvatar: authorProfile.avatar || fallbackAvatar,
+        authorAvatar: publicAuthorAvatar,
         requestText: postText.trim(),
         skillCategory: postCategory,
         urgency: postUrgency,
@@ -299,6 +332,7 @@ export default function BoardScreen() {
       <RequestCard
         item={item}
         currentUserId={user?.uid ?? ''}
+        isOwnPost={item.authorId === user?.uid}
         onOfferHelp={handleOfferHelp}
       />
     );
@@ -397,8 +431,8 @@ export default function BoardScreen() {
             </View>
 
             <View style={styles.modalAuthorRow}>
-              {authorProfile.avatar ? (
-                <Image source={{ uri: authorProfile.avatar }} style={styles.modalAvatar} />
+              {modalAuthorAvatarUri ? (
+                <Image source={{ uri: modalAuthorAvatarUri }} style={styles.modalAvatar} />
               ) : (
                 <View style={[styles.modalAvatar, styles.modalAvatarPlaceholder]}>
                   <Text style={styles.modalAvatarInitials}>{getInitials(authorProfile.name)}</Text>
@@ -728,8 +762,12 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.surface,
   },
   offerBtnActive: {
-    backgroundColor: Colors.primary,
-    borderColor: Colors.primary,
+    backgroundColor: Colors.success,
+    borderColor: Colors.success,
+  },
+  offerBtnOwn: {
+    borderColor: Colors.border,
+    backgroundColor: Colors.surface,
   },
   offerBtnText: {
     fontSize: 13,
@@ -738,6 +776,10 @@ const styles = StyleSheet.create({
   },
   offerBtnTextActive: {
     color: Colors.white,
+  },
+  offerBtnOwnText: {
+    color: Colors.textMuted,
+    fontWeight: '600',
   },
   emptyContainer: {
     flex: 1,

@@ -3,6 +3,10 @@ import React from 'react';
 import { StyleSheet, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
+import { useAuth } from '@/context/AuthContext';
+import { db } from '@/firebaseConfig';
+import { collection, query, where, onSnapshot } from 'firebase/firestore';
+import { useState, useEffect } from 'react';
 
 type IoniconName = React.ComponentProps<typeof Ionicons>['name'];
 
@@ -24,6 +28,16 @@ function TabIcon({ name, focused }: TabIconProps) {
 }
 
 export default function TabLayout() {
+  const { user } = useAuth();
+  const [pendingCount, setPendingCount] = useState(0);
+
+  useEffect(() => {
+    if (!user) return;
+    const q = query(collection(db, 'swapRequests'), where('toUserId', '==', user.uid), where('status', '==', 'pending'));
+    const unsub = onSnapshot(q, snap => setPendingCount(snap.size));
+    return unsub;
+  }, [user]);
+
   return (
     <Tabs
       screenOptions={{
@@ -50,14 +64,19 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
-        name="scan"
+        name="swaps"
         options={{
-          title: 'Scan',
+          title: 'Swaps',
           tabBarIcon: ({ focused }) => (
             <View style={styles.scanButtonOuter}>
-              <View style={styles.scanButtonInner}>
-                <Ionicons name="qr-code" size={26} color={Colors.white} />
+              <View style={[styles.scanButtonInner, focused && styles.scanButtonInnerActive]}>
+                <Ionicons name="swap-horizontal" size={26} color={Colors.white} />
               </View>
+              {pendingCount > 0 && (
+                <View style={styles.badge}>
+                  <Text style={styles.badgeText}>{pendingCount}</Text>
+                </View>
+              )}
             </View>
           ),
           tabBarLabel: () => null,
@@ -131,5 +150,27 @@ const styles = StyleSheet.create({
     backgroundColor: Colors.primary,
     alignItems: 'center',
     justifyContent: 'center',
+  },
+  scanButtonInnerActive: {
+    backgroundColor: Colors.primaryDark,
+  },
+  badge: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    backgroundColor: Colors.error,
+    borderRadius: 10,
+    minWidth: 20,
+    height: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 4,
+    borderWidth: 2,
+    borderColor: Colors.background,
+  },
+  badgeText: {
+    color: Colors.white,
+    fontSize: 10,
+    fontWeight: '800',
   },
 });

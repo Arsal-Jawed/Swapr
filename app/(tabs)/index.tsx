@@ -13,11 +13,13 @@ import {
   TextInput,
   Modal,
 } from 'react-native';
+import { useRouter } from 'expo-router';
 import MapView, { Marker, PROVIDER_DEFAULT, Region } from 'react-native-maps';
 import * as Location from 'expo-location';
 import { Ionicons } from '@expo/vector-icons';
 import { Colors } from '@/constants/theme';
 import { db } from '@/firebaseConfig';
+import { resolveAvatarUri, isRemoteAvatarUrl } from '@/lib/localAvatar';
 import { useAuth } from '@/context/AuthContext';
 import {
   collection,
@@ -26,6 +28,11 @@ import {
   updateDoc,
   query,
   where,
+  addDoc,
+  getDocs,
+  serverTimestamp,
+  limit,
+  getDoc,
 } from 'firebase/firestore';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
@@ -97,6 +104,30 @@ export default function HomeScreen() {
   const [searchText, setSearchText] = useState('');
   const [showSearch, setShowSearch] = useState(false);
   const [mapType, setMapType] = useState<'standard' | 'satellite'>('standard');
+
+  // Current user's own Firestore profile (needed for propose request doc)
+  const [myProfile, setMyProfile] = useState<{ name: string; avatar: string; skillsOffered: string } | null>(null);
+
+  // Per-selected-user propose state: 'idle' | 'sending' | 'sent'
+  const [proposeState, setProposeState] = useState<'idle' | 'sending' | 'sent'>('idle');
+
+  const [activePartnerIds, setActivePartnerIds] = useState<Set<string>>(new Set());
+  const router = useRouter();
+
+  // Fetch own profile once on mount
+  useEffect(() => {
+    if (!user) return;
+    getDoc(doc(db, 'users', user.uid)).then((snap) => {
+      if (snap.exists()) {
+        const d = snap.data();
+        setMyProfile({
+          name: d.name ?? user.displayName ?? 'Swapr User',
+          avatar: d.avatar ?? '',
+          skillsOffered: d.skillsOffered ?? '',
+        });
+      }
+    });
+  }, [user]);
 
   const saveLocationToFirestore = useCallback(
     async (latitude: number, longitude: number) => {
@@ -183,7 +214,30 @@ export default function HomeScreen() {
       });
       setNearbyUsers(users);
     });
-    return unsubscribe;
+
+    const qSwaps1 = query(collection(db, 'swaps'), where('user1Id', '==', user.uid), where('status', '==', 'active'));
+    const qSwaps2 = query(collection(db, 'swaps'), where('user2Id', '==', user.uid), where('status', '==', 'active'));
+
+    let p1: string[] = [];
+    let p2: string[] = [];
+    const updatePartners = () => {
+      setActivePartnerIds(new Set([...p1, ...p2]));
+    };
+
+    const unsubSwaps1 = onSnapshot(qSwaps1, (snap) => {
+      p1 = snap.docs.map(d => d.data().user2Id);
+      updatePartners();
+    });
+    const unsubSwaps2 = onSnapshot(qSwaps2, (snap) => {
+      p2 = snap.docs.map(d => d.data().user1Id);
+      updatePartners();
+    });
+
+    return () => {
+      unsubscribe();
+      unsubSwaps1();
+      unsubSwaps2();
+    };
   }, [user]);
 
   function centerOnMe() {
@@ -200,6 +254,54 @@ export default function HomeScreen() {
         ? getDistance(myLocation.latitude, myLocation.longitude, nearUser.latitude, nearUser.longitude)
         : '—';
     setSelectedUser({ ...nearUser, distance });
+    setProposeState('idle'); // reset state for each new user
+  }
+
+  async function handlePropose() {
+    if (!user || !selectedUser || !myProfile) return;
+    if (proposeState !== 'idle') return;
+
+    setProposeState('sending');
+    try {
+      // Guard: check if pending/accepted request already exists
+      const existingQ = query(
+        collection(db, 'swapRequests'),
+        where('fromUserId', '==', user.uid),
+        where('toUserId', '==', selectedUser.uid),
+        where('status', 'in', ['pending', 'accepted']),
+        limit(1)
+      );
+      const existingSnap = await getDocs(existingQ);
+
+      if (!existingSnap.empty) {
+        setProposeState('sent');
+        Alert.alert('Already Sent', `You already have an active request with ${selectedUser.name}.`);
+        return;
+      }
+
+      if (activePartnerIds.has(selectedUser.uid)) {
+        setProposeState('sent');
+        Alert.alert('Active Swap', `You are already swapping with ${selectedUser.name}.`);
+        return;
+      }
+
+      await addDoc(collection(db, 'swapRequests'), {
+        fromUserId: user.uid,
+        fromUserName: myProfile.name,
+        fromUserAvatar: isRemoteAvatarUrl(myProfile.avatar) ? myProfile.avatar : '',
+        fromSkillsOffered: myProfile.skillsOffered,
+        toUserId: selectedUser.uid,
+        type: 'propose',
+        status: 'pending',
+        createdAt: serverTimestamp(),
+      });
+
+      setProposeState('sent');
+      Alert.alert('Request Sent! 🎉', `Swap request sent to ${selectedUser.name}. They will be notified in their Swaps tab.`);
+    } catch {
+      setProposeState('idle');
+      Alert.alert('Error', 'Could not send request. Please try again.');
+    }
   }
 
   const filteredUsers = nearbyUsers.filter((u) => {
@@ -214,6 +316,8 @@ export default function HomeScreen() {
       skills.includes(searchText.toLowerCase());
     return catMatch && searchMatch;
   });
+
+  const sheetAvatarUri = selectedUser ? resolveAvatarUri(selectedUser.avatar) : null;
 
   const initialRegion: Region | undefined = myLocation
     ? { ...myLocation, ...DELTA }
@@ -250,7 +354,9 @@ export default function HomeScreen() {
             showsCompass={false}
             showsScale={false}
           >
-            {filteredUsers.map((nearUser) => (
+            {filteredUsers.map((nearUser) => {
+              const markerAvatarUri = resolveAvatarUri(nearUser.avatar);
+              return (
               <Marker
                 key={nearUser.uid}
                 coordinate={{ latitude: nearUser.latitude, longitude: nearUser.longitude }}
@@ -258,8 +364,8 @@ export default function HomeScreen() {
               >
                 <View style={styles.markerOuter}>
                   <View style={styles.markerInner}>
-                    {nearUser.avatar ? (
-                      <Image source={{ uri: nearUser.avatar }} style={styles.markerAvatar} />
+                    {markerAvatarUri ? (
+                      <Image source={{ uri: markerAvatarUri }} style={styles.markerAvatar} />
                     ) : (
                       <View style={styles.markerInitialsWrapper}>
                         <Text style={styles.markerInitials}>{getInitials(nearUser.name)}</Text>
@@ -269,7 +375,8 @@ export default function HomeScreen() {
                   <View style={styles.markerTail} />
                 </View>
               </Marker>
-            ))}
+            );
+            })}
           </MapView>
 
           <View style={[styles.topBar, { paddingTop: insets.top + 8 }]}>
@@ -378,8 +485,8 @@ export default function HomeScreen() {
 
               <View style={styles.sheetHeader}>
                 <View style={styles.sheetAvatarWrapper}>
-                  {selectedUser.avatar ? (
-                    <Image source={{ uri: selectedUser.avatar }} style={styles.sheetAvatar} />
+                  {sheetAvatarUri ? (
+                    <Image source={{ uri: sheetAvatarUri }} style={styles.sheetAvatar} />
                   ) : (
                     <View style={[styles.sheetAvatar, styles.sheetAvatarPlaceholder]}>
                       <Text style={styles.sheetAvatarInitials}>{getInitials(selectedUser.name)}</Text>
@@ -436,14 +543,44 @@ export default function HomeScreen() {
               </View>
 
               <View style={styles.sheetActions}>
-                <TouchableOpacity style={styles.sheetActionSecondary}>
-                  <Ionicons name="chatbubble-outline" size={18} color={Colors.primary} />
-                  <Text style={styles.sheetActionSecondaryText}>Message</Text>
-                </TouchableOpacity>
-                <TouchableOpacity style={styles.sheetActionPrimary}>
-                  <Ionicons name="swap-horizontal" size={18} color={Colors.white} />
-                  <Text style={styles.sheetActionPrimaryText}>Propose Swap</Text>
-                </TouchableOpacity>
+                {activePartnerIds.has(selectedUser.uid) ? (
+                  <TouchableOpacity
+                    style={[styles.sheetActionPrimary, { backgroundColor: '#10B981' }]}
+                    onPress={() => {
+                      setSelectedUser(null);
+                      router.push('/(tabs)/swaps');
+                    }}
+                    activeOpacity={0.85}
+                  >
+                    <Ionicons name="swap-horizontal" size={18} color={Colors.white} />
+                    <Text style={styles.sheetActionPrimaryText}>Active Swap - View</Text>
+                  </TouchableOpacity>
+                ) : (
+                  <TouchableOpacity
+                    style={[
+                      styles.sheetActionPrimary,
+                      proposeState === 'sent' && styles.sheetActionPrimaryDone,
+                      proposeState === 'sending' && styles.sheetActionPrimaryLoading,
+                    ]}
+                    onPress={handlePropose}
+                    disabled={proposeState !== 'idle'}
+                    activeOpacity={0.85}
+                  >
+                    {proposeState === 'sending' ? (
+                      <ActivityIndicator size="small" color={Colors.white} />
+                    ) : proposeState === 'sent' ? (
+                      <>
+                        <Ionicons name="checkmark-circle" size={18} color={Colors.white} />
+                        <Text style={styles.sheetActionPrimaryText}>Request Sent</Text>
+                      </>
+                    ) : (
+                      <>
+                        <Ionicons name="swap-horizontal" size={18} color={Colors.white} />
+                        <Text style={styles.sheetActionPrimaryText}>Propose Swap</Text>
+                      </>
+                    )}
+                  </TouchableOpacity>
+                )}
               </View>
             </View>
           )}
@@ -874,32 +1011,14 @@ const styles = StyleSheet.create({
   },
   sheetActions: {
     flexDirection: 'row',
-    gap: 10,
   },
-  sheetActionSecondary: {
+  sheetActionPrimary: {
     flex: 1,
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    gap: 7,
-    paddingVertical: 14,
-    borderRadius: 16,
-    borderWidth: 1.5,
-    borderColor: Colors.primary,
-    backgroundColor: Colors.surface,
-  },
-  sheetActionSecondaryText: {
-    fontSize: 14,
-    fontWeight: '700',
-    color: Colors.primary,
-  },
-  sheetActionPrimary: {
-    flex: 2,
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
     gap: 8,
-    paddingVertical: 14,
+    paddingVertical: 15,
     borderRadius: 16,
     backgroundColor: Colors.primary,
     shadowColor: Colors.primary,
@@ -907,6 +1026,13 @@ const styles = StyleSheet.create({
     shadowOpacity: 0.35,
     shadowRadius: 12,
     elevation: 6,
+  },
+  sheetActionPrimaryDone: {
+    backgroundColor: Colors.success,
+    shadowColor: Colors.success,
+  },
+  sheetActionPrimaryLoading: {
+    opacity: 0.75,
   },
   sheetActionPrimaryText: {
     fontSize: 14,
